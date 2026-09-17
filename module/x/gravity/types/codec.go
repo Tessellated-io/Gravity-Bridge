@@ -52,6 +52,17 @@ func RegisterInterfaces(registry types.InterfaceRegistry) {
 	msgservice.RegisterMsgServiceDesc(registry, &_Msg_serviceDesc)
 }
 
+// RegisterLegacyQueryInterfaces registers DEPRECATED types which still occur in historical on-chain state (old
+// x/gov proposals) but which must never again take part in consensus.
+//
+// It MUST only ever be called on the query-only interface registry (see app.NewGravityApp), never on the registry
+// behind the consensus codec, the tx decoder or any keeper used during block execution: registering these types
+// there would change how transactions referencing them fail, which is consensus-breaking.
+// nolint: exhaustruct
+func RegisterLegacyQueryInterfaces(registry types.InterfaceRegistry) {
+	registry.RegisterImplementations((*govv1beta1.Content)(nil), &IBCMetadataProposal{})
+}
+
 // RegisterCodec registers concrete types on the Amino codec
 // nolint: exhaustruct
 func RegisterCodec(cdc *codec.LegacyAmino) {
