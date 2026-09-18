@@ -4,6 +4,7 @@ import (
 	fmt "fmt"
 	"strings"
 
+	errorsmod "cosmossdk.io/errors"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	govv1beta1 "github.com/cosmos/cosmos-sdk/x/gov/types/v1beta1"
 )
@@ -12,6 +13,9 @@ const (
 	ProposalTypeUnhaltBridge           = "UnhaltBridge"
 	ProposalTypeAirdrop                = "Airdrop"
 	ProposalTypeCosmosBridgeableTokens = "CosmosBridgeableTokens"
+	// ProposalTypeIBCMetadata is the proposal type of the DEPRECATED IBCMetadataProposal. It is intentionally NOT
+	// registered with x/gov (see keeper.RegisterProposalTypes), so no new proposal of this type is accepted.
+	ProposalTypeIBCMetadata = "IBCMetadata"
 )
 
 func (p *UnhaltBridgeProposal) GetTitle() string { return p.Title }
@@ -168,5 +172,39 @@ func (p DeleteCosmosBridgeableTokensProposal) String() string {
 	for _, m := range p.Metadatas {
 		b.WriteString(fmt.Sprintf("  Denom: %s Name: %s Symbol: %s\n", m.Base, m.Name, m.Symbol))
 	}
+	return b.String()
+}
+
+// IBCMetadataProposal is DEPRECATED (see the proto definition): it can no longer be submitted or executed.
+// The methods below only exist so that the type satisfies govv1beta1.Content, which is what x/gov needs in
+// order to decode the historical proposals which still carry it. The type is registered exclusively through
+// RegisterLegacyQueryInterfaces, i.e. on the query-only interface registry, never on the consensus one.
+// nolint: exhaustruct
+var _ govv1beta1.Content = &IBCMetadataProposal{}
+
+func (p *IBCMetadataProposal) GetTitle() string { return p.Title }
+
+func (p *IBCMetadataProposal) GetDescription() string { return p.Description }
+
+func (p *IBCMetadataProposal) ProposalRoute() string { return RouterKey }
+
+func (p *IBCMetadataProposal) ProposalType() string {
+	return ProposalTypeIBCMetadata
+}
+
+// ValidateBasic always fails: the IBCMetadataProposal type is deprecated and new proposals must not be created.
+func (p *IBCMetadataProposal) ValidateBasic() error {
+	return errorsmod.Wrap(ErrInvalid,
+		"IBCMetadataProposal is deprecated and can no longer be submitted, use SetCosmosBridgeableTokensProposal instead")
+}
+
+func (p IBCMetadataProposal) String() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(`IBC Metadata Proposal (DEPRECATED):
+  Title:          %s
+  Description:    %s
+  IBC Denom:      %s
+  Denom: %s Name: %s Symbol: %s
+`, p.Title, p.Description, p.IbcDenom, p.Metadata.Base, p.Metadata.Name, p.Metadata.Symbol))
 	return b.String()
 }

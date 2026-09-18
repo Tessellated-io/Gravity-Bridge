@@ -24,9 +24,11 @@ func NewDefaultGenesisState() GenesisState {
 	return tempApp.DefaultGenesis()
 }
 
+// NewEncodingConfig returns the encoding config for clients of the chain (CLI, REST gateway, tx service). It
+// resolves every type the consensus encoding config does plus deprecated query-only types, see NewGravityApp.
 func NewEncodingConfig() simappparams.EncodingConfig {
 	tempApp := TemporaryApp()
-	return tempApp.EncodingConfig
+	return tempApp.ClientEncodingConfig
 }
 
 func TemporaryApp() *Gravity {

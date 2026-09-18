@@ -202,6 +202,9 @@ type Gravity struct {
 	TxConfig          client.TxConfig
 	InterfaceRegistry codectypes.InterfaceRegistry
 	EncodingConfig    simappparams.EncodingConfig
+	// ClientEncodingConfig is the encoding config for clients of the chain (CLI, REST gateway, tx service). Its
+	// interface registry is a superset of InterfaceRegistry which also resolves deprecated query-only types.
+	ClientEncodingConfig simappparams.EncodingConfig
 
 	invCheckPeriod uint
 
@@ -221,6 +224,7 @@ type Gravity struct {
 	MintKeeper            *mintkeeper.Keeper
 	DistrKeeper           *distrkeeper.Keeper
 	GovKeeper             *govkeeper.Keeper
+	GovQueryKeeper        *govkeeper.Keeper // read-only, serves gov queries and export only (see gov_query.go)
 	CrisisKeeper          *crisiskeeper.Keeper
 	UpgradeKeeper         *upgradekeeper.Keeper
 	ParamsKeeper          *paramskeeper.Keeper
@@ -267,6 +271,10 @@ func (app Gravity) ValidateMembers() {
 	if app.InterfaceRegistry == nil {
 		panic("Nil InterfaceRegistry!")
 	}
+	if app.ClientEncodingConfig.InterfaceRegistry == nil || app.ClientEncodingConfig.Codec == nil ||
+		app.ClientEncodingConfig.TxConfig == nil || app.ClientEncodingConfig.Amino == nil {
+		panic("Nil ClientEncodingConfig member!")
+	}
 
 	// keepers
 	if app.AccountKeeper == nil {
@@ -295,6 +303,9 @@ func (app Gravity) ValidateMembers() {
 	}
 	if app.GovKeeper == nil {
 		panic("Nil govKeeper!")
+	}
+	if app.GovQueryKeeper == nil {
+		panic("Nil govQueryKeeper!")
 	}
 	if app.CrisisKeeper == nil {
 		panic("Nil crisisKeeper!")
@@ -404,6 +415,29 @@ func NewGravityApp(
 		InterfaceRegistry: interfaceRegistry,
 		Codec:             appCodec,
 		TxConfig:          txConfig,
+		Amino:             legacyAmino,
+	}
+
+	// The query interface registry is a strict superset of the consensus interface registry above: it additionally
+	// knows deprecated types which still occur in historical state but must never again take part in consensus (see
+	// gravitytypes.RegisterLegacyQueryInterfaces and gov_query.go). It backs read-only code paths ONLY: the gov query
+	// services, genesis export and the client encoding config (CLI, REST gateway, tx service). Every consensus code
+	// path (tx decoding, message execution, keepers, migrations, genesis import) keeps using interfaceRegistry/appCodec.
+	queryInterfaceRegistry, err := codectypes.NewInterfaceRegistryWithOptions(codectypes.InterfaceRegistryOptions{
+		ProtoFiles:     proto.HybridResolver,
+		SigningOptions: signingOptions,
+	})
+	if err != nil {
+		panic(err)
+	}
+	queryCodec := codec.NewProtoCodec(queryInterfaceRegistry)
+	ethermintcryptocodec.RegisterInterfaces(queryInterfaceRegistry)
+	std.RegisterInterfaces(queryInterfaceRegistry)
+
+	clientEncodingConfig := simappparams.EncodingConfig{
+		InterfaceRegistry: queryInterfaceRegistry,
+		Codec:             queryCodec,
+		TxConfig:          authtx.NewTxConfig(queryCodec, authtx.DefaultSignModes),
 		Amino:             legacyAmino,
 	}
 
@@ -683,6 +717,22 @@ func NewGravityApp(
 	))
 	app.GovKeeper = &govKeeper
 
+	// A second, read-only gov keeper over the same store whose codec additionally decodes deprecated proposal content
+	// types. It serves the gov query services and genesis export only (see gov_query.go), so it gets neither hooks nor
+	// the legacy proposal router.
+	govQueryKeeper := govkeeper.NewKeeper(
+		queryCodec,
+		runtime.NewKVStoreService(keys[govtypes.StoreKey]),
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		distrKeeper,
+		app.MsgServiceRouter(),
+		govConfig,
+		govAuthority,
+	)
+	app.GovQueryKeeper = govQueryKeeper
+
 	ibcTransferAppModule := transfer.NewAppModule(ibcTransferKeeper)
 	ibcTransferIBCModule := transfer.NewIBCModule(ibcTransferKeeper)
 	icaAppModule := ica.NewAppModule(nil, &icaHostKeeper)
@@ -754,12 +804,16 @@ func NewGravityApp(
 			skipGenesisInvariants,
 			app.GetSubspace(crisistypes.ModuleName),
 		),
-		gov.NewAppModule(
-			appCodec,
-			&govKeeper,
-			accountKeeper,
-			bankKeeper,
-			app.GetSubspace(govtypes.ModuleName),
+		newGovAppModule(
+			gov.NewAppModule(
+				appCodec,
+				&govKeeper,
+				accountKeeper,
+				bankKeeper,
+				app.GetSubspace(govtypes.ModuleName),
+			),
+			govQueryKeeper,
+			queryCodec,
 		),
 		mint.NewAppModule(
 			appCodec,
@@ -839,6 +893,16 @@ func NewGravityApp(
 		&etherminttypes.ExtensionOptionsWeb3Tx{},
 	)
 	app.EncodingConfig = encodingConfig
+
+	// The query registry gets everything the consensus registry has, plus the deprecated query-only types.
+	moduleBasicManager.RegisterInterfaces(queryInterfaceRegistry)
+	// nolint: exhaustruct
+	queryInterfaceRegistry.RegisterImplementations(
+		(*tx.TxExtensionOptionI)(nil),
+		&etherminttypes.ExtensionOptionsWeb3Tx{},
+	)
+	gravitytypes.RegisterLegacyQueryInterfaces(queryInterfaceRegistry)
+	app.ClientEncodingConfig = clientEncodingConfig
 
 	// NOTE: upgrade module is required to be prioritized
 	app.ModuleManager.SetOrderPreBlockers(
@@ -1305,10 +1369,11 @@ func (app *Gravity) AutoCliOpts() autocli.AppOptions {
 	// The AppModule created via NewAppModule() doesn't have legacyProposalHandlers set,
 	// so its GetTxCmd() returns a command without the param-change subcommand.
 	// We use the ModuleBasicManager's gov module which was created with the handlers.
+	// Note that the module manager holds the gov module wrapped in govAppModule (see gov_query.go).
 	if govBasicModule, ok := (*app.ModuleBasicManager)[govtypes.ModuleName]; ok {
-		if govAppModule, ok := modules[govtypes.ModuleName].(gov.AppModule); ok {
+		if govModule, ok := modules[govtypes.ModuleName].(govAppModule); ok {
 			modules[govtypes.ModuleName] = govAppModuleWithCustomTxCmd{
-				AppModule:     govAppModule,
+				AppModule:     govModule.AppModule,
 				basicForTxCmd: govBasicModule,
 			}
 		}
