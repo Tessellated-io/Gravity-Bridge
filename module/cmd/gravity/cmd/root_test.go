@@ -20,6 +20,7 @@ import (
 	gravitytypes "github.com/Gravity-Bridge/Gravity-Bridge/module/x/gravity/types"
 )
 
+// nolint: exhaustruct
 func TestValidateGenesisCmdRejectsQueryOnlyProposalTypes(t *testing.T) {
 	tempApp := app.TemporaryApp()
 	genesisState := tempApp.DefaultGenesis()
@@ -39,7 +40,6 @@ func TestValidateGenesisCmdRejectsQueryOnlyProposalTypes(t *testing.T) {
 
 	var govGenesis govv1.GenesisState
 	require.NoError(t, tempApp.AppCodec.UnmarshalJSON(genesisState[govtypes.ModuleName], &govGenesis))
-	// nolint: exhaustruct
 	govGenesis.Proposals = append(govGenesis.Proposals, &govv1.Proposal{
 		Id:       govGenesis.StartingProposalId,
 		Messages: []*codectypes.Any{legacyMsg},
