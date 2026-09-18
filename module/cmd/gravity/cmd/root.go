@@ -26,6 +26,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	serverconfig "github.com/cosmos/cosmos-sdk/server/config"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
+	"github.com/cosmos/cosmos-sdk/types/module"
 	authcmd "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
 	"github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
@@ -166,7 +167,7 @@ func initRootCmd(
 		CollectGenTxsCmd(banktypes.GenesisBalancesIterator{}, app.DefaultNodeHome, GravityMessageValidator, encodingConfig.TxConfig.SigningContext().ValidatorAddressCodec()),
 		genutilcli.MigrateGenesisCmd(genutilcli.MigrationMap),
 		GenTxCmd(*tempApp.ModuleBasicManager, encodingConfig.TxConfig, banktypes.GenesisBalancesIterator{}, app.DefaultNodeHome),
-		genutilcli.ValidateGenesisCmd(*tempApp.ModuleBasicManager),
+		newValidateGenesisCmd(*tempApp.ModuleBasicManager, tempApp.EncodingConfig),
 		AddGenesisAccountCmd(app.DefaultNodeHome),
 		tmcli.NewCompletionCmd(rootCmd, true),
 		testnetCmd(*tempApp.ModuleBasicManager, banktypes.GenesisBalancesIterator{}),
@@ -202,6 +203,29 @@ func initRootCmd(
 		panic(err)
 	}
 
+}
+
+// newValidateGenesisCmd keeps genesis validation on the consensus encoding config. The root client context uses the
+// broader query encoding config so that CLI queries can render deprecated proposal types, but a genesis containing
+// one of those query-only types cannot be imported by InitChainer and must not be reported as valid.
+func newValidateGenesisCmd(
+	moduleBasics module.BasicManager,
+	consensusEncodingConfig simappparams.EncodingConfig,
+) *cobra.Command {
+	cmd := genutilcli.ValidateGenesisCmd(moduleBasics)
+	runE := cmd.RunE
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		clientCtx := client.GetClientContextFromCmd(cmd).
+			WithCodec(consensusEncodingConfig.Codec).
+			WithInterfaceRegistry(consensusEncodingConfig.InterfaceRegistry).
+			WithTxConfig(consensusEncodingConfig.TxConfig).
+			WithLegacyAmino(consensusEncodingConfig.Amino)
+		if err := client.SetCmdClientContext(cmd, clientCtx); err != nil {
+			return err
+		}
+		return runE(cmd, args)
+	}
+	return cmd
 }
 
 func addModuleInitFlags(startCmd *cobra.Command) {
